@@ -1,0 +1,303 @@
+---
+title: "Re-evaluating Growth in the Time of Debt"
+subtitle: "[DSLC stages]: Data cleaning and pre-processing"
+format: 
+  html:
+    toc: true
+    toc-location: right
+    number-depth: 4
+    theme: cerulean
+    df-print: kable
+execute:
+  echo: true
+editor: source
+number-sections: true
+embed-resources: true
+editor_options: 
+  chunk_output_type: console
+---
+
+
+## Domain problem formulation
+
+
+## Data source overview
+
+
+
+## Step 1: Review background information {#sec-bg-info}
+
+- Debt (IMF): Gross general government debt as a share of GDP. The values come from the IMF. The data is sparse for early years and for developing countries. Missing values are recorded as a string saying "no data"
+
+- Growth (World Bank): The annual percentage growth rate of GDP at market prices, based on local currency, real growth in other words. Aggregates are based on constant 2015 USD.
+
+- Observational units: The observational unit for both datasets is a country-year
+
+### Data dictionary
+
+- debt.xls is a wide formatted excel spreadsheet containing one row per country and one column per year with each observation being a country's debt in a given year
+
+- growth.csv is also wide formatted with the same observational unit, but contains real GDP growth and a few other unimportant variables (country code, indicator code, indicator name)
+
+
+## Step 2: Loading in the data
+```{r}
+library("readxl")
+library(tidyverse)
+
+# Read in debt dataset
+debt <- read_excel("./data/debt.xls", sheet = 1) |>
+  rename(country = 1)
+
+# Inspect
+dim(debt)
+head(debt)
+```
+
+```{r}
+# Read in growth dataset
+growth <- read_csv("./data/growth.csv")
+
+# Inspect
+dim(growth)
+head(growth)
+```
+
+```{r}
+# Filter years pre-1960 out
+debt_1960 <- debt |>
+  select(country, `1960`:`2015`)
+```
+
+
+## Step 3: Examine the data and create action items
+
+### Finding invalid values
+```{r}
+# Transform debt data for inspection
+debt_long_explore <- debt_1960 |>
+  filter(!is.na(country)) |>
+  mutate(across(-country, ~ as.numeric(na_if(as.character(.x), "no data")))) |>
+  pivot_longer(-country, names_to = "year", values_to = "debt")
+
+# Transform growth data for inspection
+growth_long_explore <- growth |>
+  select(country = `Country Name`, matches("^[0-9]{4}$")) |>
+  pivot_longer(-country, names_to = "year", values_to = "growth")
+
+# View descriptive statistic summaries of debt and growth datasets
+summary(debt_long_explore$debt)
+summary(growth_long_explore$growth)
+```
+
+```{r}
+# Plot debt histogram
+ggplot(debt_long_explore, aes(x = debt)) +
+  geom_histogram(bins = 60) +
+  labs(x = "Debt (% of GDP)", y = "Count")
+
+# Plot growth histogram
+ggplot(growth_long_explore, aes(x = growth)) +
+  geom_histogram(bins = 60) +
+  labs(x = "GDP growth (%)", y = "Count")
+```
+
+```{r}
+# Inspect datasets
+debt_long_explore |> arrange(desc(debt)) |> head(5)
+debt_long_explore |> arrange(debt) |> head(3)
+growth_long_explore |> arrange(desc(growth)) |> head(3)
+growth_long_explore |> arrange(growth) |> head(3)
+```
+
+```{r}
+# Missing values in the debt data are coded as the string "no data"
+debt_1960 |>
+  filter(!is.na(country)) |>
+  select(-country) |>
+  unlist() |>
+  table(useNA = "ifany") |>
+  sort(decreasing = TRUE) |>
+  head(3)
+
+# Calculate average #s of missing values
+mean(is.na(debt_long_explore$debt))
+mean(is.na(growth_long_explore$growth))
+```
+
+```{r}
+# Plot debt data availability by year
+debt_long_explore |>
+  group_by(year = as.numeric(year)) |>
+  summarise(n_nonmissing = sum(!is.na(debt))) |>
+  ggplot(aes(x = year, y = n_nonmissing)) +
+  geom_line() +
+  labs(x = "Year", y = "Number of countries with debt data")
+```
+
+### Assessing Column names
+```{r}
+# Inspect column names for each dataset
+colnames(debt)[1:5]
+colnames(growth)[1:6]
+```
+
+
+### Assessing variable type
+```{r}
+# Inspect variable values
+debt |> select(1:3, `1960`, `2015`) |> glimpse()
+growth |> select(1:5) |> glimpse()
+```
+
+
+### Assessing data completeness
+```{r}
+# Empty rows and non-data rows in the debt data
+debt |> filter(if_all(-1, is.na))
+
+# Does each country appear exactly once?
+debt |> count(country) |> filter(n > 1)
+growth |> count(`Country Name`) |> filter(n > 1)
+
+# Which entries are not actual countries?
+debt |>
+  filter(str_detect(country, "G-20|Income|Union|IMF"))
+growth |>
+  filter(`Country Name` %in% c("World", "High income", "Low income",
+                               "Sub-Saharan Africa", "European Union",
+                               "OECD members", "Small states")) |>
+  select(1:2)
+
+# Country names with trailing whitespace
+debt |>
+  filter(country != str_trim(country)) |>
+  pull(country)
+```
+
+
+## Step 4: Clean and pre-process the data
+
+```{r}
+cleanDebt <- function(debt_data, min_year = 1960) {
+  debt_data |>
+    # Remove the empty row and the copyright footnote row
+    filter(!is.na(country), !str_detect(country, "IMF")) |>
+    # Remove leading/trailing whitespace from the country names
+    mutate(country = str_trim(country)) |>
+    # Replace "no data" with NA and convert every year column to numeric
+    mutate(across(-country, ~ as.numeric(na_if(as.character(.x), "no data")))) |>
+    # Convert to long format
+    pivot_longer(-country, names_to = "year", values_to = "debt_pct_gdp") |>
+    # Convert year to an integer and keep only the years we need
+    mutate(year = as.integer(year)) |>
+    filter(year >= min_year)
+}
+
+# Clean debt dataset
+debt_clean <- cleanDebt(debt)
+
+# Inspect country-year observations of Australia in 1960's
+debt_clean |>
+  filter(country == "Australia", year <= 1969)
+```
+
+```{r}
+cleanGrowth <- function(growth_data, min_year = 1960, max_year = 2021) {
+  growth_data |>
+    # Keep the country name and the year columns only
+    select(country = `Country Name`, matches("^[0-9]{4}$")) |>
+    # Convert to long format
+    pivot_longer(-country, names_to = "year", values_to = "growth_pct_gdp") |>
+    # Convert year to an integer and keep only the years we need
+    mutate(year = as.integer(year)) |>
+    filter(year >= min_year, year <= max_year)
+}
+
+# Clean growth dataset
+growth_clean <- cleanGrowth(growth)
+
+# Inspect country-year observations of Australia in 1960's
+growth_clean |>
+  filter(country == "Australia", year <= 1969)
+```
+
+```{r}
+# In the debt data but not the growth data
+setdiff(unique(debt_clean$country), unique(growth_clean$country))
+```
+
+```{r}
+# In the growth data but not the debt data
+setdiff(unique(growth_clean$country), unique(debt_clean$country))
+```
+
+```{r}
+preprocessData <- function(debt_clean, growth_clean) {
+
+  # Mapping of IMF country name to World Bank country name
+  imf_to_wb <- c(
+    "China, People's Republic of"      = "China",
+    "Congo, Dem. Rep. of the"          = "Congo, Dem. Rep.",
+    "Congo, Republic of"               = "Congo, Rep.",
+    "Czech Republic"                   = "Czechia",
+    "Côte d'Ivoire"                    = "Cote d'Ivoire",
+    "Egypt"                            = "Egypt, Arab Rep.",
+    "Hong Kong SAR"                    = "Hong Kong SAR, China",
+    "Iran"                             = "Iran, Islamic Rep.",
+    "Korea, Republic of"               = "Korea, Rep.",
+    "Lao P.D.R."                       = "Lao PDR",
+    "Micronesia, Fed. States of"       = "Micronesia, Fed. Sts.",
+    "Puerto Rico"                      = "Puerto Rico (US)",
+    "Saint Kitts and Nevis"            = "St. Kitts and Nevis",
+    "Saint Lucia"                      = "St. Lucia",
+    "Saint Vincent and the Grenadines" = "St. Vincent and the Grenadines",
+    "South Sudan, Republic of"         = "South Sudan",
+    "Syria"                            = "Syrian Arab Republic",
+    "São Tomé and Príncipe"            = "Sao Tome and Principe",
+    "Turkey"                           = "Turkiye",
+    "Venezuela"                        = "Venezuela, RB",
+    "Vietnam"                          = "Viet Nam",
+    "Yemen"                            = "Yemen, Rep."
+  )
+
+  # IMF entries that are country groups rather than countries
+  imf_aggregates <- c("G-20 Advanced", "G-20 Emerging", "Low Income",
+                      "Eastern Caribbean Currency Union")
+
+  debt_renamed <- debt_clean |>
+    filter(!(country %in% imf_aggregates)) |>
+    mutate(country = if_else(country %in% names(imf_to_wb),
+                             unname(imf_to_wb[country]),
+                             country))
+
+  # Keep only the country-years that appear in both datasets
+  inner_join(debt_renamed, growth_clean, by = c("country", "year")) |>
+    arrange(country, year)
+}
+
+# Call preprocessing function on joined dataset
+growth_debt <- preprocessData(debt_clean, growth_clean)
+
+# Inspect country-year observations of Australia in 1960's
+growth_debt |>
+  filter(country == "Australia", year <= 1969)
+```
+
+
+```{r}
+# Inspect joined dataset
+dim(growth_debt)
+n_distinct(growth_debt$country)
+range(growth_debt$year)
+
+# every country-year should appear exactly once
+growth_debt |> count(country, year) |> filter(n > 1)
+```
+
+
+```{r}
+# Display final clean dataset
+growth_debt
+```
+
